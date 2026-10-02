@@ -19,9 +19,15 @@ export interface Resource {
   entitlementKey: string | null;
 }
 
-type ErrorCode = 'INVALID_INTENT' | 'INVALID_KEY' | 'RESOURCE_NOT_FOUND' |
-  'PAYMENT_NOT_FOUND' | 'INTENT_MISMATCH' | 'STALE_GENERATION' |
-  'PAYMENT_CANCELED' | 'ENTITLEMENT_CONFLICT';
+type ErrorCode =
+  | 'INVALID_INTENT'
+  | 'INVALID_KEY'
+  | 'RESOURCE_NOT_FOUND'
+  | 'PAYMENT_NOT_FOUND'
+  | 'INTENT_MISMATCH'
+  | 'STALE_GENERATION'
+  | 'PAYMENT_CANCELED'
+  | 'ENTITLEMENT_CONFLICT';
 
 export class WorkflowError extends Error {
   constructor(readonly code: ErrorCode) {
@@ -50,7 +56,10 @@ interface ResourceRow {
 const validKey = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(value);
 const positiveInteger = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 2_147_483_647;
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value > 0 &&
+  value <= 2_147_483_647;
 
 function requireKey(value: unknown): asserts value is string {
   if (!validKey(value)) throw new WorkflowError('INVALID_KEY');
@@ -64,39 +73,60 @@ function validateAndCopyIntent(input: PaymentIntent): PaymentIntent {
     amountMinor: input.amountMinor,
     currency: input.currency,
   };
-  if (!validKey(intent.key) || !validKey(intent.resourceId) ||
-      !positiveInteger(intent.generation) || !positiveInteger(intent.amountMinor) ||
-      typeof intent.currency !== 'string' || !/^[A-Z]{3}$/.test(intent.currency)) {
+  if (
+    !validKey(intent.key) ||
+    !validKey(intent.resourceId) ||
+    !positiveInteger(intent.generation) ||
+    !positiveInteger(intent.amountMinor) ||
+    typeof intent.currency !== 'string' ||
+    !/^[A-Z]{3}$/.test(intent.currency)
+  ) {
     throw new WorkflowError('INVALID_INTENT');
   }
   return intent;
 }
 function assertSameIntent(payment: Payment, intent: PaymentIntent) {
-  if (payment.resourceId !== intent.resourceId || payment.generation !== intent.generation ||
-      payment.amountMinor !== intent.amountMinor || payment.currency !== intent.currency) {
+  if (
+    payment.resourceId !== intent.resourceId ||
+    payment.generation !== intent.generation ||
+    payment.amountMinor !== intent.amountMinor ||
+    payment.currency !== intent.currency
+  ) {
     throw new WorkflowError('INTENT_MISMATCH');
   }
 }
 const paymentFromRow = (row: PaymentRow): Payment => ({
-  key: row.idempotency_key, resourceId: row.resource_id, generation: row.generation,
-  amountMinor: row.amount_minor, currency: row.currency, state: row.state,
+  key: row.idempotency_key,
+  resourceId: row.resource_id,
+  generation: row.generation,
+  amountMinor: row.amount_minor,
+  currency: row.currency,
+  state: row.state,
   completedAt: row.completed_at?.toISOString() ?? null,
   canceledAt: row.canceled_at?.toISOString() ?? null,
 });
 const resourceFromRow = (row: ResourceRow): Resource => ({
-  id: row.id, generation: row.generation, entitlementKey: row.entitlement_key,
+  id: row.id,
+  generation: row.generation,
+  entitlementKey: row.entitlement_key,
 });
 
 async function readResource(db: Database, id: string, lock = false): Promise<Resource> {
   const result = await db.query<ResourceRow>(
-    `SELECT * FROM resources WHERE id = $1${lock ? ' FOR UPDATE' : ''}`, [id],
+    `SELECT * FROM resources WHERE id = $1${lock ? ' FOR UPDATE' : ''}`,
+    [id],
   );
   if (!result.rows[0]) throw new WorkflowError('RESOURCE_NOT_FOUND');
   return resourceFromRow(result.rows[0]);
 }
-async function findPayment(db: Database, key: string, lock = false): Promise<Payment | undefined> {
+async function findPayment(
+  db: Database,
+  key: string,
+  lock = false,
+): Promise<Payment | undefined> {
   const result = await db.query<PaymentRow>(
-    `SELECT * FROM payments WHERE idempotency_key = $1${lock ? ' FOR UPDATE' : ''}`, [key],
+    `SELECT * FROM payments WHERE idempotency_key = $1${lock ? ' FOR UPDATE' : ''}`,
+    [key],
   );
   return result.rows[0] ? paymentFromRow(result.rows[0]) : undefined;
 }
@@ -112,7 +142,8 @@ export class PaymentWorkflows {
   async createResource(id: string): Promise<Resource> {
     requireKey(id);
     const result = await this.pool.query<ResourceRow>(
-      'INSERT INTO resources (id) VALUES ($1) RETURNING *', [id],
+      'INSERT INTO resources (id) VALUES ($1) RETURNING *',
+      [id],
     );
     return resourceFromRow(result.rows[0]!);
   }
@@ -126,11 +157,18 @@ export class PaymentWorkflows {
         assertSameIntent(existing, intent);
         return existing;
       }
-      if (resource.generation !== intent.generation) throw new WorkflowError('STALE_GENERATION');
+      if (resource.generation !== intent.generation)
+        throw new WorkflowError('STALE_GENERATION');
       const inserted = await client.query<PaymentRow>(
         `INSERT INTO payments (idempotency_key, resource_id, generation, amount_minor, currency)
          VALUES ($1, $2, $3, $4, $5) ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-        [intent.key, intent.resourceId, intent.generation, intent.amountMinor, intent.currency],
+        [
+          intent.key,
+          intent.resourceId,
+          intent.generation,
+          intent.amountMinor,
+          intent.currency,
+        ],
       );
       // Different resources can race for the same global key. The unique index
       // picks one winner; the loser must compare the winner's immutable intent.
@@ -147,14 +185,19 @@ export class PaymentWorkflows {
       // Historical retries return history only; they never regrant entitlement.
       if (payment.state === 'completed') return payment;
       if (payment.state === 'canceled') throw new WorkflowError('PAYMENT_CANCELED');
-      if (resource.generation !== payment.generation) throw new WorkflowError('STALE_GENERATION');
+      if (resource.generation !== payment.generation)
+        throw new WorkflowError('STALE_GENERATION');
       if (resource.entitlementKey !== null && resource.entitlementKey !== payment.key) {
         throw new WorkflowError('ENTITLEMENT_CONFLICT');
       }
-      await client.query('UPDATE resources SET entitlement_key = $1 WHERE id = $2', [key, resource.id]);
+      await client.query('UPDATE resources SET entitlement_key = $1 WHERE id = $2', [
+        key,
+        resource.id,
+      ]);
       const updated = await client.query<PaymentRow>(
         `UPDATE payments SET state = 'completed', completed_at = clock_timestamp()
-         WHERE idempotency_key = $1 RETURNING *`, [key],
+         WHERE idempotency_key = $1 RETURNING *`,
+        [key],
       );
       return paymentFromRow(updated.rows[0]!);
     });
@@ -171,7 +214,8 @@ export class PaymentWorkflows {
       );
       const updated = await client.query<PaymentRow>(
         `UPDATE payments SET state = 'canceled', canceled_at = clock_timestamp()
-         WHERE idempotency_key = $1 RETURNING *`, [key],
+         WHERE idempotency_key = $1 RETURNING *`,
+        [key],
       );
       return paymentFromRow(updated.rows[0]!);
     });
@@ -182,10 +226,12 @@ export class PaymentWorkflows {
     if (!positiveInteger(expectedGeneration)) throw new WorkflowError('INVALID_INTENT');
     return inTransaction(this.pool, async (client) => {
       const resource = await readResource(client, id, true);
-      if (resource.generation !== expectedGeneration) throw new WorkflowError('STALE_GENERATION');
+      if (resource.generation !== expectedGeneration)
+        throw new WorkflowError('STALE_GENERATION');
       const updated = await client.query<ResourceRow>(
         `UPDATE resources SET generation = generation + 1, entitlement_key = NULL
-         WHERE id = $1 RETURNING *`, [id],
+         WHERE id = $1 RETURNING *`,
+        [id],
       );
       return resourceFromRow(updated.rows[0]!);
     });

@@ -6,14 +6,19 @@ import { createSandbox } from '../support/sandbox.js';
 let db: Awaited<ReturnType<typeof createSandbox>>;
 let workflow: PaymentWorkflows;
 const intent: PaymentIntent = {
-  key: 'event-001', resourceId: 'resource-001', generation: 1,
-  amountMinor: 2400, currency: 'USD',
+  key: 'event-001',
+  resourceId: 'resource-001',
+  generation: 1,
+  amountMinor: 2400,
+  currency: 'USD',
 };
 before(async () => {
   db = await createSandbox();
   workflow = new PaymentWorkflows(db.pool);
 });
-after(async () => { if (db) await db.close(); });
+after(async () => {
+  if (db) await db.close();
+});
 beforeEach(async () => {
   await db.pool.query('TRUNCATE resources, payments');
   await workflow.createResource(intent.resourceId);
@@ -27,7 +32,10 @@ test('duplicate start, completion and cancellation return their persisted result
   assert.equal(completed.state, 'completed');
   assert.ok(completed.completedAt);
   assert.deepEqual(await workflow.complete(intent.key), completed);
-  assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, intent.key);
+  assert.equal(
+    (await workflow.getResource(intent.resourceId)).entitlementKey,
+    intent.key,
+  );
   const canceled = await workflow.cancel(intent.key);
   assert.equal(canceled.state, 'canceled');
   assert.ok(canceled.canceledAt);
@@ -43,13 +51,22 @@ async function waitForBlockedConnections(count: number) {
     if (waiting.length >= count) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.ok(new Set(waiting).size >= count, 'independent connections must contend on real row locks');
+  assert.ok(
+    new Set(waiting).size >= count,
+    'independent connections must contend on real row locks',
+  );
 }
 
-async function contend<T>(operations: Array<() => Promise<T>>, resourceIds = [intent.resourceId]) {
+async function contend<T>(
+  operations: Array<() => Promise<T>>,
+  resourceIds = [intent.resourceId],
+) {
   const blocker = await db.pool.connect();
   await blocker.query('BEGIN');
-  await blocker.query('SELECT id FROM resources WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE', [resourceIds]);
+  await blocker.query(
+    'SELECT id FROM resources WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE',
+    [resourceIds],
+  );
   const results = Promise.allSettled(operations.map((operation) => operation()));
   try {
     await waitForBlockedConnections(operations.length);
@@ -64,26 +81,43 @@ test('an idempotency key rejects changes to any part of its intent', async () =>
   await workflow.start(intent);
   await workflow.createResource('resource-002');
   for (const change of [
-    { amountMinor: 2401 }, { currency: 'EUR' }, { generation: 2 }, { resourceId: 'resource-002' },
+    { amountMinor: 2401 },
+    { currency: 'EUR' },
+    { generation: 2 },
+    { resourceId: 'resource-002' },
   ]) {
-    await assert.rejects(workflow.start({ ...intent, ...change }), { code: 'INTENT_MISMATCH' });
+    await assert.rejects(workflow.start({ ...intent, ...change }), {
+      code: 'INTENT_MISMATCH',
+    });
   }
-  assert.equal((await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total, 1);
+  assert.equal(
+    (await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total,
+    1,
+  );
 });
 
 test('concurrent starts with the same key create exactly one payment record', async () => {
-  const results = await contend([() => workflow.start(intent), () => workflow.start(intent)]);
+  const results = await contend([
+    () => workflow.start(intent),
+    () => workflow.start(intent),
+  ]);
   assert.equal(results[0]?.status, 'fulfilled');
   assert.deepEqual(results[0], results[1]);
-  assert.equal((await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total, 1);
+  assert.equal(
+    (await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total,
+    1,
+  );
 });
 
 test('concurrent reuse of a key for different resources rejects the losing intent', async () => {
   await workflow.createResource('resource-002');
-  const results = await contend([
-    () => workflow.start(intent),
-    () => workflow.start({ ...intent, resourceId: 'resource-002' }),
-  ], [intent.resourceId, 'resource-002']);
+  const results = await contend(
+    [
+      () => workflow.start(intent),
+      () => workflow.start({ ...intent, resourceId: 'resource-002' }),
+    ],
+    [intent.resourceId, 'resource-002'],
+  );
   assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
   const rejected = results.find((result) => result.status === 'rejected');
   assert.equal(rejected?.reason.code, 'INTENT_MISMATCH');
@@ -91,16 +125,25 @@ test('concurrent reuse of a key for different resources rejects the losing inten
 
 test('concurrent completions share the persisted completion timestamp and entitlement', async () => {
   await workflow.start(intent);
-  const results = await contend([() => workflow.complete(intent.key), () => workflow.complete(intent.key)]);
+  const results = await contend([
+    () => workflow.complete(intent.key),
+    () => workflow.complete(intent.key),
+  ]);
   assert.equal(results[0]?.status, 'fulfilled');
   assert.deepEqual(results[0], results[1]);
-  assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, intent.key);
+  assert.equal(
+    (await workflow.getResource(intent.resourceId)).entitlementKey,
+    intent.key,
+  );
 });
 
 test('concurrent cancellations share the persisted cancellation timestamp', async () => {
   await workflow.start(intent);
   await workflow.complete(intent.key);
-  const results = await contend([() => workflow.cancel(intent.key), () => workflow.cancel(intent.key)]);
+  const results = await contend([
+    () => workflow.cancel(intent.key),
+    () => workflow.cancel(intent.key),
+  ]);
   assert.equal(results[0]?.status, 'fulfilled');
   assert.deepEqual(results[0], results[1]);
   assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, null);
@@ -108,9 +151,13 @@ test('concurrent cancellations share the persisted cancellation timestamp', asyn
 
 test('completion racing cancellation cannot leave a canceled entitlement active', async () => {
   await workflow.start(intent);
-  const results = await contend([() => workflow.complete(intent.key), () => workflow.cancel(intent.key)]);
+  const results = await contend([
+    () => workflow.complete(intent.key),
+    () => workflow.cancel(intent.key),
+  ]);
   assert.equal(results[1]?.status, 'fulfilled');
-  if (results[0]?.status === 'rejected') assert.equal(results[0].reason.code, 'PAYMENT_CANCELED');
+  if (results[0]?.status === 'rejected')
+    assert.equal(results[0].reason.code, 'PAYMENT_CANCELED');
   assert.equal((await workflow.getPayment(intent.key)).state, 'canceled');
   assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, null);
 });
@@ -155,30 +202,45 @@ test('different payments cannot both acquire the same generation entitlement', a
   await workflow.start(intent);
   await workflow.start({ ...intent, key: 'event-002' });
   const results = await contend([
-    () => workflow.complete(intent.key), () => workflow.complete('event-002'),
+    () => workflow.complete(intent.key),
+    () => workflow.complete('event-002'),
   ]);
   assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
-  assert.equal(results.find((result) => result.status === 'rejected')?.reason.code, 'ENTITLEMENT_CONFLICT');
-  const completed = await db.pool.query("SELECT idempotency_key FROM payments WHERE state = 'completed'");
+  assert.equal(
+    results.find((result) => result.status === 'rejected')?.reason.code,
+    'ENTITLEMENT_CONFLICT',
+  );
+  const completed = await db.pool.query(
+    "SELECT idempotency_key FROM payments WHERE state = 'completed'",
+  );
   assert.equal(completed.rowCount, 1);
-  assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, completed.rows[0].idempotency_key);
+  assert.equal(
+    (await workflow.getResource(intent.resourceId)).entitlementKey,
+    completed.rows[0].idempotency_key,
+  );
 });
 
 test('generation advance racing completion never carries an entitlement into the new cycle', async () => {
   await workflow.start(intent);
   const results = await contend<unknown>([
-    () => workflow.complete(intent.key), () => workflow.advanceGeneration(intent.resourceId, 1),
+    () => workflow.complete(intent.key),
+    () => workflow.advanceGeneration(intent.resourceId, 1),
   ]);
   assert.equal(results[1]?.status, 'fulfilled');
-  if (results[0]?.status === 'rejected') assert.equal(results[0].reason.code, 'STALE_GENERATION');
+  if (results[0]?.status === 'rejected')
+    assert.equal(results[0].reason.code, 'STALE_GENERATION');
   assert.deepEqual(await workflow.getResource(intent.resourceId), {
-    id: intent.resourceId, generation: 2, entitlementKey: null,
+    id: intent.resourceId,
+    generation: 2,
+    entitlementKey: null,
   });
 });
 
 test('a database failure after entitlement update rolls both changes back', async () => {
   await workflow.start(intent);
-  await db.pool.query("ALTER TABLE payments ADD CONSTRAINT reject_completion CHECK (state <> 'completed')");
+  await db.pool.query(
+    "ALTER TABLE payments ADD CONSTRAINT reject_completion CHECK (state <> 'completed')",
+  );
   try {
     await assert.rejects(workflow.complete(intent.key), { code: '23514' });
     assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, null);
@@ -191,10 +253,15 @@ test('a database failure after entitlement update rolls both changes back', asyn
 test('a database failure during cancellation preserves the completed entitlement', async () => {
   await workflow.start(intent);
   await workflow.complete(intent.key);
-  await db.pool.query("ALTER TABLE payments ADD CONSTRAINT reject_cancellation CHECK (state <> 'canceled')");
+  await db.pool.query(
+    "ALTER TABLE payments ADD CONSTRAINT reject_cancellation CHECK (state <> 'canceled')",
+  );
   try {
     await assert.rejects(workflow.cancel(intent.key), { code: '23514' });
-    assert.equal((await workflow.getResource(intent.resourceId)).entitlementKey, intent.key);
+    assert.equal(
+      (await workflow.getResource(intent.resourceId)).entitlementKey,
+      intent.key,
+    );
     assert.equal((await workflow.getPayment(intent.key)).state, 'completed');
   } finally {
     await db.pool.query('ALTER TABLE payments DROP CONSTRAINT reject_cancellation');
@@ -203,11 +270,18 @@ test('a database failure during cancellation preserves the completed entitlement
 
 test('invalid amounts and stale generation advances leave state unchanged', async () => {
   for (const amountMinor of [0, -1, 1.5, Number.MAX_SAFE_INTEGER]) {
-    await assert.rejects(workflow.start({ ...intent, amountMinor }), { code: 'INVALID_INTENT' });
+    await assert.rejects(workflow.start({ ...intent, amountMinor }), {
+      code: 'INVALID_INTENT',
+    });
   }
-  await assert.rejects(workflow.advanceGeneration(intent.resourceId, 2), { code: 'STALE_GENERATION' });
+  await assert.rejects(workflow.advanceGeneration(intent.resourceId, 2), {
+    code: 'STALE_GENERATION',
+  });
   assert.equal((await workflow.getResource(intent.resourceId)).generation, 1);
-  assert.equal((await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total, 0);
+  assert.equal(
+    (await db.pool.query('SELECT count(*)::int AS total FROM payments')).rows[0].total,
+    0,
+  );
 });
 
 test('caller mutation during a lock wait cannot change the captured payment intent', async () => {
@@ -215,11 +289,17 @@ test('caller mutation during a lock wait cannot change the captured payment inte
   const mutable = { ...intent };
   const blocker = await db.pool.connect();
   await blocker.query('BEGIN');
-  await blocker.query('SELECT id FROM resources WHERE id = $1 FOR UPDATE', [intent.resourceId]);
+  await blocker.query('SELECT id FROM resources WHERE id = $1 FOR UPDATE', [
+    intent.resourceId,
+  ]);
   const pending = workflow.start(mutable);
   try {
     await waitForBlockedConnections(1);
-    Object.assign(mutable, { key: 'mutated-event', resourceId: 'resource-002', amountMinor: 9900 });
+    Object.assign(mutable, {
+      key: 'mutated-event',
+      resourceId: 'resource-002',
+      amountMinor: 9900,
+    });
   } finally {
     await blocker.query('ROLLBACK');
     blocker.release();
@@ -233,8 +313,14 @@ test('caller mutation during a lock wait cannot change the captured payment inte
 
 test('keys and currency codes reject trailing line separators exactly', async () => {
   for (const separator of ['\n', '\r', '\u2028', '\u2029']) {
-    await assert.rejects(workflow.getPayment(`event${separator}`), { code: 'INVALID_KEY' });
-    await assert.rejects(workflow.start({ ...intent, key: `event${separator}` }), { code: 'INVALID_INTENT' });
-    await assert.rejects(workflow.start({ ...intent, currency: `USD${separator}` }), { code: 'INVALID_INTENT' });
+    await assert.rejects(workflow.getPayment(`event${separator}`), {
+      code: 'INVALID_KEY',
+    });
+    await assert.rejects(workflow.start({ ...intent, key: `event${separator}` }), {
+      code: 'INVALID_INTENT',
+    });
+    await assert.rejects(workflow.start({ ...intent, currency: `USD${separator}` }), {
+      code: 'INVALID_INTENT',
+    });
   }
 });

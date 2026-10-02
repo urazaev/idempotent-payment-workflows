@@ -2,7 +2,10 @@ import type { Pool, PoolClient } from 'pg';
 
 // One checked-out connection owns every statement, including COMMIT. Never put
 // external effects in this callback: PostgreSQL cannot roll them back.
-export async function inTransaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function inTransaction<T>(
+  pool: Pool,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await pool.connect();
   let committing = false;
   let discard: Error | undefined;
@@ -19,8 +22,12 @@ export async function inTransaction<T>(pool: Pool, operation: (client: PoolClien
     try {
       await client.query('ROLLBACK');
     } catch (rollbackError) {
-      discard = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
-      throw new AggregateError([error, rollbackError], 'Transaction failed; rollback could not be confirmed');
+      discard =
+        rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      throw new AggregateError(
+        [error, rollbackError],
+        'Transaction failed; rollback could not be confirmed',
+      );
     }
     throw error;
   } finally {

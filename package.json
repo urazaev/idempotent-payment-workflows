@@ -10,7 +10,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
-    "demo": "node --import tsx examples/scenario.ts"
+    "demo": "node --import tsx examples/scenario.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "pg": "8.23.1"
@@ -18,6 +20,7 @@
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/pg": "8.23.1",
+    "prettier": "3.9.9",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   }
