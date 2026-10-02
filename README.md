@@ -65,6 +65,7 @@ immutable intent: resource ID, generation, amount in minor units, and currency.
 
 ```mermaid
 stateDiagram-v2
+    direction LR
     [*] --> pending: start
     pending --> completed: complete
     pending --> canceled: cancel
