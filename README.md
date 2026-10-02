@@ -1,5 +1,7 @@
 # Idempotent payment workflows
 
+[![Checks](https://github.com/urazaev/idempotent-payment-workflows/actions/workflows/check.yml/badge.svg?branch=main)](https://github.com/urazaev/idempotent-payment-workflows/actions/workflows/check.yml)
+
 A small TypeScript and PostgreSQL example of handling duplicate and competing payment
 events without splitting payment state from resource access.
 
